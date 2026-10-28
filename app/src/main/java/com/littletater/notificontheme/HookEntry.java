@@ -610,16 +610,11 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             av(pkg + " large err " + t);
         }
-        Object extrasObj = null;
-        try {
-            extrasObj = XposedHelpers.callMethod(notif, "getExtras");
-        } catch (Throwable t) {
-            av(pkg + " extras err " + t);
-        }
-        if (!(extrasObj instanceof android.os.Bundle)) {
+        android.os.Bundle extras = extrasOf(notif);
+        if (extras == null) {
+            av(pkg + " extras null");
             return null;
         }
-        android.os.Bundle extras = (android.os.Bundle) extrasObj;
         av(pkg + " keys=" + extras.keySet());
         try {
             Drawable d = personIcon(extras.getParcelable("android.messagingUser"), ctx);
@@ -645,6 +640,43 @@ public class HookEntry implements IXposedHookLoadPackage {
             av(pkg + " msgs err " + t);
         }
         return pushAvatar(extras, pkg, ctx);
+    }
+
+    /**
+     * Notification.getExtras() 在 ColorOS 17 上被隐藏，XposedHelpers.callMethod 走 #exact 查找
+     * 会直接抛 NoSuchMethodError（不查父类、不看隐藏标记）。这里按类层次自己找方法，
+     * 再退到 extras 字段，最后退到 sbn.getNotification().extras 的 Bundle。
+     */
+    private static android.os.Bundle extrasOf(Object notif) {
+        if (notif == null) {
+            return null;
+        }
+        for (Class<?> c = notif.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                java.lang.reflect.Method m = c.getDeclaredMethod("getExtras");
+                m.setAccessible(true);
+                Object v = m.invoke(notif);
+                if (v instanceof android.os.Bundle) {
+                    return (android.os.Bundle) v;
+                }
+            } catch (NoSuchMethodException ignored) {
+            } catch (Throwable t) {
+                av("extras invoke err " + t);
+            }
+        }
+        for (Class<?> c = notif.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                java.lang.reflect.Field f = c.getDeclaredField("extras");
+                f.setAccessible(true);
+                Object v = f.get(notif);
+                if (v instanceof android.os.Bundle) {
+                    return (android.os.Bundle) v;
+                }
+            } catch (NoSuchFieldException ignored) {
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
     }
 
     /** 推送通道通知里翻头像：oplus_small_icon 优先，找不到就扫所有图标/头像型 extras。 */
