@@ -437,6 +437,9 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (themed == null) {
             return;
         }
+        if (IconPackSource.avatarAllowed(pkg)) {
+            av("apply " + pkg + " avatar=" + (avatar == null ? "null" : "ok"));
+        }
         applyRowIconRecursive(root, themed, avatar, pkg, 0);
     }
 
@@ -518,6 +521,16 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    private static final java.util.concurrent.atomic.AtomicInteger sAvLog =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /** 头像链路诊断日志，只打前 60 条，平时不刷屏。 */
+    private static void av(String msg) {
+        if (sAvLog.incrementAndGet() <= 60) {
+            IconPackSource.log("av " + msg);
+        }
+    }
+
     private static Drawable avatarOfEntry(Object entry, String pkg) {
         if (entry == null || pkg == null || !IconPackSource.avatarAllowed(pkg)) {
             return null;
@@ -532,11 +545,13 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
             Object notif = XposedHelpers.callMethod(sbn, "getNotification");
             Drawable out = avatarFromNotification(notif, pkg);
+            av(pkg + " -> " + (out == null ? "null" : out.getClass().getSimpleName()));
             if (out != null) {
                 AvatarCache.put(cacheKey, out);
             }
             return out;
         } catch (Throwable t) {
+            av(pkg + " entry err " + t);
             return null;
         }
     }
@@ -545,9 +560,9 @@ public class HookEntry implements IXposedHookLoadPackage {
      * 头像来源，按命中率排：
      *   1) getLargeIcon() —— app 自己发的图（微信/QQ 常见）
      *   2) MessagingStyle 的 Person 头像
-     *   3) extras 里的 oplus_small_icon —— 走 opush 推送通道的 IM（抖音私信就是这条），
+     *   3) extras 里的位图 —— 走 opush 推送通道的 IM（抖音私信就是这条），
      *      推送里带的是发送者头像位图，没有 largeIcon、没有 MessagingStyle。
-     *      万一它其实就是 app logo，跟应用图标比一下像素，像就丢掉。
+     *      跟应用图标比一下像素，像就说明是 logo，丢掉。
      */
     private static Drawable avatarFromNotification(Object notif, String pkg) {
         Context ctx = IconPackSource.appContext();
@@ -556,74 +571,131 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
         try {
             Object large = XposedHelpers.callMethod(notif, "getLargeIcon");
+            av(pkg + " large=" + (large == null ? "null" : large.getClass().getSimpleName()));
             if (large instanceof Icon) {
                 Drawable d = ((Icon) large).loadDrawable(ctx);
                 if (d != null) {
                     return d;
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            av(pkg + " large err " + t);
         }
+        Object extrasObj = null;
         try {
-            Object extrasObj = XposedHelpers.callMethod(notif, "getExtras");
-            if (!(extrasObj instanceof android.os.Bundle)) {
-                return null;
-            }
-            android.os.Bundle extras = (android.os.Bundle) extrasObj;
+            extrasObj = XposedHelpers.callMethod(notif, "getExtras");
+        } catch (Throwable t) {
+            av(pkg + " extras err " + t);
+        }
+        if (!(extrasObj instanceof android.os.Bundle)) {
+            return null;
+        }
+        android.os.Bundle extras = (android.os.Bundle) extrasObj;
+        av(pkg + " keys=" + extras.keySet());
+        try {
             Drawable d = personIcon(extras.getParcelable("android.messagingUser"), ctx);
             if (d != null) {
                 return d;
             }
+        } catch (Throwable t) {
+            av(pkg + " msgUser err " + t);
+        }
+        try {
             android.os.Parcelable[] msgs = extras.getParcelableArray("android.messages");
             if (msgs != null && msgs.length > 0) {
                 Object last = msgs[msgs.length - 1];
                 if (last instanceof android.os.Bundle) {
-                    d = personIcon(((android.os.Bundle) last).getParcelable("sender_person"), ctx);
+                    Drawable d = personIcon(
+                            ((android.os.Bundle) last).getParcelable("sender_person"), ctx);
                     if (d != null) {
                         return d;
                     }
                 }
             }
-            return pushAvatar(extras, pkg, ctx);
         } catch (Throwable t) {
-            return null;
+            av(pkg + " msgs err " + t);
         }
+        return pushAvatar(extras, pkg, ctx);
     }
 
-    /** opush 推送通道塞的头像位图：extras["oplus_small_icon"]。 */
+    /** 推送通道通知里翻头像：oplus_small_icon 优先，找不到就扫所有图标/头像型 extras。 */
     private static Drawable pushAvatar(android.os.Bundle extras, String pkg, Context ctx) {
+        Object primary = null;
         try {
-            Object raw = extras.getParcelable("oplus_small_icon");
-            if (!(raw instanceof Icon)) {
+            primary = extras.getParcelable("oplus_small_icon");
+        } catch (Throwable t) {
+            av(pkg + " oplus_small_icon err " + t);
+        }
+        Drawable d = bitmapAvatar(primary, pkg, ctx, "oplus_small_icon");
+        if (d != null) {
+            return d;
+        }
+        for (String key : extras.keySet()) {
+            if ("oplus_small_icon".equals(key)) {
+                continue;
+            }
+            String lower = key.toLowerCase(java.util.Locale.ROOT);
+            if (!(lower.contains("icon") || lower.contains("avatar") || lower.contains("head")
+                    || lower.contains("portrait") || lower.contains("face"))) {
+                continue;
+            }
+            Object raw;
+            try {
+                raw = extras.get(key);
+            } catch (Throwable t) {
+                continue;
+            }
+            d = bitmapAvatar(raw, pkg, ctx, key);
+            if (d != null) {
+                return d;
+            }
+        }
+        return null;
+    }
+
+    private static Drawable bitmapAvatar(Object raw, String pkg, Context ctx, String key) {
+        if (raw == null) {
+            return null;
+        }
+        try {
+            Drawable d;
+            if (raw instanceof Icon) {
+                d = ((Icon) raw).loadDrawable(ctx);
+            } else if (raw instanceof Drawable) {
+                d = (Drawable) raw;
+            } else if (raw instanceof Bitmap) {
+                d = new BitmapDrawable(ctx.getResources(), (Bitmap) raw);
+            } else {
+                av(pkg + " " + key + " type=" + raw.getClass().getName());
                 return null;
             }
-            Drawable d = ((Icon) raw).loadDrawable(ctx);
             if (!(d instanceof BitmapDrawable)) {
+                av(pkg + " " + key + " d=" + (d == null ? "null" : d.getClass().getSimpleName()));
                 return null;
             }
             Bitmap bm = ((BitmapDrawable) d).getBitmap();
-            if (bm == null || bm.getWidth() < 64 || bm.getWidth() != bm.getHeight()) {
+            if (bm == null) {
                 return null;
             }
             boolean appLike = looksLikeAppIcon(bm, pkg, ctx);
-            if (sPushLog.get() < 20) {
-                sPushLog.incrementAndGet();
-                IconPackSource.log("push avatar pkg=" + pkg + " size=" + bm.getWidth()
-                        + " appIconLike=" + appLike);
+            av(pkg + " " + key + " " + bm.getWidth() + "x" + bm.getHeight()
+                    + " appIconLike=" + appLike);
+            if (bm.getWidth() < 64 || bm.getWidth() != bm.getHeight()) {
+                return null;
             }
             if (appLike) {
                 return null;
             }
             return d;
         } catch (Throwable t) {
+            av(pkg + " " + key + " err " + t);
             return null;
         }
     }
 
+
     /** 32x32 平均色签名比对：跟应用图标长得一样就不是头像。 */
     private static final Map<String, int[]> sAppIconSig = new HashMap<>();
-    private static final java.util.concurrent.atomic.AtomicInteger sPushLog =
-            new java.util.concurrent.atomic.AtomicInteger();
 
     private static boolean looksLikeAppIcon(Bitmap bm, String pkg, Context ctx) {
         try {
