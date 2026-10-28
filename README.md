@@ -17,6 +17,10 @@ LSPosed 模块。把桌面图标包（ADW / Blueprint 那一套 `appfilter.xml` 
 
 配置项改了以后 5 秒内自动生效，不点重启也能等到下一次图标重绘。
 
+配置走两路：模块自己的 `ConfigProvider`，以及镜像到 `Settings.Global` 的
+`spud_icon_theme_cfg`。SystemUI 优先读镜像 —— 模块进程会被 ColorOS 省电策略冻结，
+冻结之后 ContentProvider 就查不动了，镜像不受影响。
+
 ## 设置项
 
 | 项 | 作用 |
@@ -43,16 +47,24 @@ LSPosed 模块。把桌面图标包（ADW / Blueprint 那一套 `appfilter.xml` 
 | `CapsuleNotificationCardView.getRoundedIcon(NotificationIconData)` | 锁屏岛胶囊图标 |
 | `LockScreenNotificationIconData.getIcon()` | 锁屏通知列表图标 |
 
-头像 + 角标优先反射 ColorOS 自带的
-`com.oplus.systemui.notification.row.wrapper.LayerDrawableWithAppIconKt.createBackgroundWithAppIcon(...)`，
-签名变了就退回自绘（圆形裁头像 + 右下角角标 + 白描边）。
+头像 + 角标是自绘的（`AvatarBadge.Composed`）：圆角裁头像 + 右下角直接压主题图标，
+不垫白圈。ColorOS 自带的
+`LayerDrawableWithAppIconKt.createBackgroundWithAppIcon(...)` 在 17.0.0.103 上把
+origin 和 badge 画反了，所以不反射它。
+
+**只认真头像**。头像来源按顺序试：`android.largeIcon` → `android.messagingUser`
+→ `android.messages` 里最后一条的 `sender_person` → 推送 extras 里的图片
+（`oplus_small_icon` 等，先与应用图标 / 主题图标 / 通知 smallIcon 做像素比对，
+判定成 logo 就丢弃）。全都没有 → 只显示主题图标，不生成字母头像、不拿 logo 冒充。
 
 ## 边界
 
 - 图标包必须带 `assets/appfilter.xml`，组件名支持 `ComponentInfo{pkg/act}`、`pkg/act`、`pkg` 三种写法
 - 图标包里没有的包名 → 保持系统原图标
 - 系统自身图标（`com.android.systemui`）不替换
-- 只 hook `com.android.systemui`，其他进程不受影响
+- 只 hook `com.android.systemui`，其他进程不受影响，不需要勾「系统框架」作用域
+- 走 oppush 推送通道的通知（抖音私信等）包里只有昵称和正文，没有好友头像，
+  这类通知就是纯主题图标 —— 拿不到的东西不编
 - 桌面图标包换包后要重新在设置里选一次（自动模式下 5 秒内会重新探测）
 - 头像白名单只列本机已安装的应用，未安装的包名留在配置里，装上了自动生效
 
@@ -99,6 +111,10 @@ aapt2 那一步仍然可能挂。CI 在 Linux 上是 ASCII 路径，没这个问
 
 | versionName | 内容 |
 | --- | --- |
+| 3.7 | 没有真头像就只显示主题图标（去掉字母头像补齐）；角标去掉白圈；不再需要 hook 系统框架 |
+| 3.5 | 配置镜像进 `Settings.Global`，修掉模块进程被冻结后 `avatar` 被钉成 false |
+| 3.3 | 头像来源加推送 extras，与 app 图标做像素比对剔除 logo |
+| 3.0 | 通知卡片图标兜底路径（`NotificationRowIconView` 异步覆盖后回贴） |
 | 2.5 | 抖音私信这类走 opush 推送通道的通知也能取到头像（`extras[oplus_small_icon]`，与 app 图标像素比对后判定） |
 | 2.4 | 首页副标题与白名单页同口径（只数已安装） |
 | 2.3 | 白名单只列本机已安装应用 |

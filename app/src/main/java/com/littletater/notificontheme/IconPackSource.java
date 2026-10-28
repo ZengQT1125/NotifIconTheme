@@ -94,6 +94,12 @@ final class IconPackSource {
         sStateAt = 0L;
     }
 
+    /** 设置页里的「诊断日志」开关，关着的时候一条都不打。 */
+    static boolean debug() {
+        ConfigStore.State st = sState;
+        return st != null && st.debug;
+    }
+
     static Context appContext() {
         return sAppCtx;
     }
@@ -121,10 +127,6 @@ final class IconPackSource {
     }
 
     /** 是否开了"头像 + 角标"。 */
-    static boolean avatarEnabled() {
-        ConfigStore.State st = live();
-        return st != null && st.avatar && instance() != null;
-    }
 
     /**
      * 这个包是否在白名单里。用户配了列表就只认列表，没配就认默认 IM 集合。
@@ -156,10 +158,6 @@ final class IconPackSource {
         return st != null && st.lock && instance() != null;
     }
 
-    static float scale() {
-        ConfigStore.State st = live();
-        return st == null ? 0.90f : st.scale;
-    }
 
     static Drawable themedDrawable(String pkg) {
         if (pkg == null || pkg.isEmpty()) {
@@ -167,11 +165,7 @@ final class IconPackSource {
         }
         try {
             IconPackSource s = instance();
-            Drawable d = s == null ? null : s.get(pkg);
-            if (!"com.android.systemui".equals(pkg) && sResolveCount.incrementAndGet() <= 10) {
-                log("resolve " + pkg + " -> " + (d != null) + " (src=" + (s != null) + ")");
-            }
-            return d;
+            return s == null ? null : s.get(pkg);
         } catch (Throwable t) {
             if (sErrorCount.incrementAndGet() <= 5) {
                 log("resolve error: " + t);
@@ -180,8 +174,6 @@ final class IconPackSource {
         }
     }
 
-    private static final java.util.concurrent.atomic.AtomicInteger sResolveCount =
-            new java.util.concurrent.atomic.AtomicInteger();
     private static final java.util.concurrent.atomic.AtomicInteger sErrorCount =
             new java.util.concurrent.atomic.AtomicInteger();
 
@@ -201,7 +193,7 @@ final class IconPackSource {
         }
         sState = st;
         sStateAt = now;
-        if (sCfgLog.incrementAndGet() <= 20) {
+        if (sCfgLog.incrementAndGet() == 1) {
             log("cfg avatar=" + st.avatar + " lock=" + st.lock + " scale=" + st.scale
                     + " packs=" + ConfigStore.parsePacks(st.avatarPacks).size());
         }

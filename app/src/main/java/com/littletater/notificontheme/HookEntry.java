@@ -39,7 +39,6 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class HookEntry implements IXposedHookLoadPackage {
 
     private static final String SYSUI = "com.android.systemui";
-    private static final String SYSTEM_SERVER = "android";
     private static final String TAG_THEMED = "spud_themed";
     private static final String TAG_THEMED_DRAWABLE = "spud_themed_drawable";
 
@@ -57,12 +56,6 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
-        if (SYSTEM_SERVER.equals(lp.packageName)) {
-            // 投递前的图片裁剪跑在 system_server，要在那里放行白名单应用的大图
-            IconPackSource.log("module loaded in " + lp.processName);
-            FrameworkHooks.install(lp.classLoader);
-            return;
-        }
         if (!SYSUI.equals(lp.packageName)) {
             return;
         }
@@ -505,7 +498,6 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (((ImageView) v).getDrawable() == shown) {
             return;
         }
-        av("view " + pkg + " av=" + (avatar != null));
         sInReapply.set(true);
         try {
             ((ImageView) v).setImageDrawable(shown);
@@ -633,25 +625,12 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static final java.util.concurrent.atomic.AtomicInteger sAvLog =
             new java.util.concurrent.atomic.AtomicInteger();
 
-    /** 头像链路诊断日志，只打前 60 条，平时不刷屏。 */
+    /** 头像链路诊断日志：只有打开「诊断日志」才写，且最多 200 条。 */
     private static void av(String msg) {
-        if (sAvLog.incrementAndGet() <= 200) {
-            IconPackSource.log("av " + msg);
+        if (!IconPackSource.debug() || sAvLog.incrementAndGet() > 200) {
+            return;
         }
-    }
-
-    /** 取通知标题（多数 IM 推送里就是发送者昵称）。 */
-    private static String titleOf(Object notif) {
-        try {
-            android.os.Bundle extras = extrasOf(notif);
-            if (extras == null) {
-                return null;
-            }
-            CharSequence cs = extras.getCharSequence("android.title");
-            return cs == null ? null : cs.toString();
-        } catch (Throwable t) {
-            return null;
-        }
+        IconPackSource.log("av " + msg);
     }
 
     private static Drawable avatarOfEntry(Object entry, String pkg) {
@@ -667,14 +646,8 @@ public class HookEntry implements IXposedHookLoadPackage {
                 return cached;
             }
             Object notif = XposedHelpers.callMethod(sbn, "getNotification");
+            // 没有真头像就不补：宁可只显示主题图标，也不要假头像
             Drawable out = avatarFromNotification(notif, pkg);
-            if (out == null) {
-                // 推送里根本没有头像位：用发送者昵称补一张字母头像，别让大图位空着
-                out = LetterAvatar.of(IconPackSource.appContext(), titleOf(notif));
-                if (out != null) {
-                    av(pkg + " letter from title");
-                }
-            }
             av(pkg + " -> " + (out == null ? "null" : out.getClass().getSimpleName()));
             if (out != null) {
                 AvatarCache.put(cacheKey, out);

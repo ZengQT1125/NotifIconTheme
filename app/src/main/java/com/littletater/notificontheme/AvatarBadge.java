@@ -82,14 +82,14 @@ final class AvatarBadge {
             drawCenterCrop(c, avatar, left, top, s);
             c.restoreToCount(save);
 
+            // 角标直接压在右下角，不再垫白圆：白圈在深色通知卡片上会显得脏
             float bs = Math.max(minBadge, s * badgeRatio);
-            float cr = bs / 2f;
-            float cx = left + s - cr;
-            float cy = top + s - cr;
-            c.drawCircle(cx, cy, cr, ring);
-            int inset = Math.max(1, Math.round(bs * 0.10f));
-            badge.setBounds(Math.round(cx - cr) + inset, Math.round(cy - cr) + inset,
-                    Math.round(cx + cr) - inset, Math.round(cy + cr) - inset);
+            float half = bs / 2f;
+            float cx = left + s - half;
+            float cy = top + s - half;
+            int inset = Math.max(1, Math.round(bs * 0.06f));
+            badge.setBounds(Math.round(cx - half) + inset, Math.round(cy - half) + inset,
+                    Math.round(cx + half) - inset, Math.round(cy + half) - inset);
             badge.draw(c);
         }
 
@@ -115,7 +115,6 @@ final class AvatarBadge {
             alpha = a;
             avatar.setAlpha(a);
             badge.setAlpha(a);
-            ring.setAlpha(a);
         }
 
         @Override

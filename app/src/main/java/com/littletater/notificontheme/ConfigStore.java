@@ -77,10 +77,6 @@ public final class ConfigStore {
         }
     }
 
-    public static State readFromProvider(Context ctx) {
-        State s = readOrNull(ctx);
-        return s == null ? new State() : s;
-    }
 
     /**
      * 读失败返回 null（provider 进程还没起来、刚装完被 force-stop 等）。
