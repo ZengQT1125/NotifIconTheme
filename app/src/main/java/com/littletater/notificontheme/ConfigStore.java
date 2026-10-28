@@ -76,23 +76,33 @@ public final class ConfigStore {
     }
 
     public static State readFromProvider(Context ctx) {
+        State s = readOrNull(ctx);
+        return s == null ? new State() : s;
+    }
+
+    /**
+     * 读失败返回 null（provider 进程还没起来、刚装完被 force-stop 等）。
+     * 调用方拿到 null 必须重试，不能把默认值当结果缓存下来，否则 avatar 会被永久钉成 false。
+     */
+    public static State readOrNull(Context ctx) {
         State s = new State();
         Cursor c = null;
         try {
             ContentResolver cr = ctx.getContentResolver();
             c = cr.query(STATE_URI, null, null, null, null);
-            if (c != null && c.moveToFirst()) {
-                s.enabled = c.getInt(0) != 0;
-                s.pack = c.getString(1) == null ? "" : c.getString(1);
-                s.scale = c.getFloat(2);
-                s.shade = c.getInt(3) != 0;
-                s.debug = c.getInt(4) != 0;
-                s.avatar = c.getInt(5) != 0;
-                s.lock = c.getInt(6) != 0;
-                s.avatarPacks = c.getString(7) == null ? "" : c.getString(7);
+            if (c == null || !c.moveToFirst()) {
+                return null;
             }
-        } catch (Throwable ignored) {
-            // provider 还没装上 / 被停用，走自动探测
+            s.enabled = c.getInt(0) != 0;
+            s.pack = c.getString(1) == null ? "" : c.getString(1);
+            s.scale = c.getFloat(2);
+            s.shade = c.getInt(3) != 0;
+            s.debug = c.getInt(4) != 0;
+            s.avatar = c.getInt(5) != 0;
+            s.lock = c.getInt(6) != 0;
+            s.avatarPacks = c.getString(7) == null ? "" : c.getString(7);
+        } catch (Throwable t) {
+            return null;
         } finally {
             if (c != null) {
                 try {

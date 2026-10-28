@@ -188,7 +188,16 @@ final class IconPackSource {
         if (sState != null && now - sStateAt < CONFIG_TTL_MS) {
             return sState;
         }
-        sState = ConfigStore.readFromProvider(sAppCtx);
+        ConfigStore.State st = ConfigStore.readOrNull(sAppCtx);
+        if (st == null) {
+            // 读失败（多半是刚装完模块、provider 进程还没起来）：保留上次快照，500ms 后重试。
+            if (sState == null) {
+                sState = new ConfigStore.State();
+            }
+            sStateAt = now - CONFIG_TTL_MS + 500L;
+            return sState;
+        }
+        sState = st;
         sStateAt = now;
         return sState;
     }

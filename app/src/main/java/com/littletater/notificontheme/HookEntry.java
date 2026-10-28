@@ -555,7 +555,7 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     /** 头像链路诊断日志，只打前 60 条，平时不刷屏。 */
     private static void av(String msg) {
-        if (sAvLog.incrementAndGet() <= 60) {
+        if (sAvLog.incrementAndGet() <= 200) {
             IconPackSource.log("av " + msg);
         }
     }
