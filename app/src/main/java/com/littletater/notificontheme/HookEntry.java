@@ -39,6 +39,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class HookEntry implements IXposedHookLoadPackage {
 
     private static final String SYSUI = "com.android.systemui";
+    private static final String SYSTEM_SERVER = "android";
     private static final String TAG_THEMED = "spud_themed";
     private static final String TAG_THEMED_DRAWABLE = "spud_themed_drawable";
 
@@ -56,6 +57,12 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
+        if (SYSTEM_SERVER.equals(lp.packageName)) {
+            // 投递前的图片裁剪跑在 system_server，要在那里放行白名单应用的大图
+            IconPackSource.log("module loaded in " + lp.processName);
+            FrameworkHooks.install(lp.classLoader);
+            return;
+        }
         if (!SYSUI.equals(lp.packageName)) {
             return;
         }
