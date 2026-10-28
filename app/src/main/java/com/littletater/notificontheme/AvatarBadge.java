@@ -13,17 +13,12 @@ import android.graphics.drawable.Drawable;
 /**
  * 个人头像 + 应用主题图标角标。
  *
- * ColorOS 17 自己就有这套合成器（设置里的"显示应用图标"开关走它），
- * 优先反射调用宿主实现，保证头像圆角、角标描边、阴影跟系统完全一致；
- * 宿主不在或签名变了就退回自绘，效果略糙但不会空图。
+ * 自己画，不调宿主 com.oplus...LayerDrawableWithAppIconKt.createBackgroundWithAppIcon：
+ * 那个方法在 ColorOS 17.0.0.103 上把两个 Drawable 画反了（大头像画成应用图标、角标画成头像），
+ * 用它反而得不到"头像大图 + 主题图标小角标"。这里自己裁圆角方、中心裁切、右下角贴角标，
+ * 尺寸比例照抄系统观感（角标 46%、白描边 2dp）。
  */
 final class AvatarBadge {
-
-    private static final String HOST_CLASS =
-            "com.oplus.systemui.notification.row.wrapper.LayerDrawableWithAppIconKt";
-
-    private static java.lang.reflect.Method sHost;
-    private static boolean sHostTried;
 
     private AvatarBadge() {
     }
@@ -36,51 +31,14 @@ final class AvatarBadge {
         if (badge == null) {
             return avatar;
         }
-        int size = sizePx > 0 ? sizePx : dp(ctx, 36);
-        Drawable host = hostCompose(ctx, avatar, badge, pkg, size);
-        if (host != null) {
-            return host;
-        }
-        return new Composed(avatar, badge);
-    }
-
-    private static Drawable hostCompose(Context ctx, Drawable avatar, Drawable badge, String pkg,
-                                        int size) {
-        try {
-            java.lang.reflect.Method m = hostMethod(ctx);
-            if (m == null) {
-                return null;
-            }
-            Object out = m.invoke(null, ctx, avatar, badge, pkg, Integer.valueOf(size));
-            return out instanceof Drawable ? (Drawable) out : null;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    private static synchronized java.lang.reflect.Method hostMethod(Context ctx) {
-        if (sHostTried) {
-            return sHost;
-        }
-        sHostTried = true;
-        try {
-            ClassLoader cl = ctx.getClassLoader();
-            Class<?> c = Class.forName(HOST_CLASS, false, cl);
-            java.lang.reflect.Method m = c.getDeclaredMethod("createBackgroundWithAppIcon",
-                    Context.class, Drawable.class, Drawable.class, String.class, Integer.class);
-            m.setAccessible(true);
-            sHost = m;
-        } catch (Throwable ignored) {
-            sHost = null;
-        }
-        return sHost;
+        return new Composed(ctx, avatar, badge);
     }
 
     static int dp(Context ctx, int v) {
         return Math.round(v * ctx.getResources().getDisplayMetrics().density);
     }
 
-    /** 自绘兜底：圆形裁头像，右下角贴主题图标，外面一圈白描边。 */
+    /** 圆角方裁头像 + 右下角白圈角标。 */
     private static final class Composed extends Drawable {
 
         private final Drawable avatar;
@@ -88,11 +46,19 @@ final class AvatarBadge {
         private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path clip = new Path();
         private final RectF tmp = new RectF();
+        private final float radiusRatio;
+        private final float badgeRatio;
+        private final float ringWidth;
+        private final float minBadge;
         private int alpha = 255;
 
-        Composed(Drawable avatar, Drawable badge) {
+        Composed(Context ctx, Drawable avatar, Drawable badge) {
             this.avatar = avatar;
             this.badge = badge;
+            this.radiusRatio = 0.30f;
+            this.badgeRatio = 0.46f;
+            this.ringWidth = Math.max(1f, dp(ctx, 2) * 0.5f);
+            this.minBadge = dp(ctx, 14);
             ring.setColor(0xFFFFFFFF);
             ring.setStyle(Paint.Style.FILL);
         }
@@ -109,22 +75,39 @@ final class AvatarBadge {
             tmp.set(left, top, left + s, top + s);
 
             clip.reset();
-            clip.addCircle(tmp.centerX(), tmp.centerY(), s / 2f, Path.Direction.CW);
+            float r = s * radiusRatio;
+            clip.addRoundRect(tmp, r, r, Path.Direction.CW);
             int save = c.save();
             c.clipPath(clip);
-            avatar.setBounds(left, top, left + s, top + s);
-            avatar.draw(c);
+            drawCenterCrop(c, avatar, left, top, s);
             c.restoreToCount(save);
 
-            int bs = Math.max(10, Math.round(s * 0.54f));
+            float bs = Math.max(minBadge, s * badgeRatio);
             float cr = bs / 2f;
             float cx = left + s - cr;
             float cy = top + s - cr;
             c.drawCircle(cx, cy, cr, ring);
-            int inset = Math.max(1, Math.round(bs * 0.09f));
+            int inset = Math.max(1, Math.round(bs * 0.10f));
             badge.setBounds(Math.round(cx - cr) + inset, Math.round(cy - cr) + inset,
                     Math.round(cx + cr) - inset, Math.round(cy + cr) - inset);
             badge.draw(c);
+        }
+
+        private static void drawCenterCrop(Canvas c, Drawable d, int left, int top, int s) {
+            int dw = d.getIntrinsicWidth();
+            int dh = d.getIntrinsicHeight();
+            if (dw <= 0 || dh <= 0) {
+                d.setBounds(left, top, left + s, top + s);
+                d.draw(c);
+                return;
+            }
+            float scale = Math.max((float) s / dw, (float) s / dh);
+            int w = Math.round(dw * scale);
+            int h = Math.round(dh * scale);
+            int x = left + (s - w) / 2;
+            int y = top + (s - h) / 2;
+            d.setBounds(x, y, x + w, y + h);
+            d.draw(c);
         }
 
         @Override
