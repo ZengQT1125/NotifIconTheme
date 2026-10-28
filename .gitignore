@@ -1,0 +1,16 @@
+# Gradle / IDE
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.cxx/
+
+# 本地构建产物
+*.apk
+!keystore/*.jks
+
+# 系统垃圾
+.DS_Store
+Thumbs.db

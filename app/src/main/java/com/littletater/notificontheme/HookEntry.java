@@ -1,0 +1,590 @@
+package com.littletater.notificontheme;
+
+import android.app.Application;
+import android.content.Context;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Icon;
+import android.view.View;
+import android.widget.ImageView;
+
+import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
+import de.robv.android.xposed.callbacks.XC_LoadPackage;
+
+/**
+ * 入口：只在 com.android.systemui 里干活。
+ *
+ * 状态栏 / 通知小图标
+ *   1) StatusBarIconView.getIcon(StatusBarIcon)
+ *   2) OplusStatusBarIconViewEx.reloadIconFromContext(int, Context, StatusBarIcon)  ← ColorOS 实际走这条
+ *   3) setIconColor / setStaticDrawableColor / setTintAlpha / onDarkChanged —— 抗系统染色
+ *
+ * 通知中心卡片左侧 app 图标
+ *   4) NotificationHeaderViewWrapper.onContentUpdated -> NotificationRowIconView(id=icon)
+ *   5) NotificationRowIconView.setImageIcon + ImageView.setImageDrawable/setImageBitmap 回贴
+ *   6) 横幅 HeadsUpTempViewCreator.onInflationFinished
+ *
+ * 锁屏 / 锁屏岛
+ *   7) CapsuleNotificationCardView.getRoundedIcon(NotificationIconData)
+ *   8) LockScreenNotificationIconData.getIcon()
+ */
+public class HookEntry implements IXposedHookLoadPackage {
+
+    private static final String SYSUI = "com.android.systemui";
+    private static final String TAG_THEMED = "spud_themed";
+    private static final String TAG_THEMED_DRAWABLE = "spud_themed_drawable";
+
+    private static final String CAPSULE_CARD =
+            "com.oplus.systemui.notification.lockscreen.notification.CapsuleNotificationCardView";
+    private static final String CAPSULE_ICON_DATA =
+            "com.oplus.systemui.notification.lockscreen.notification"
+                    + ".CapsuleNotificationDataController$NotificationIconData";
+    private static final String LOCK_SCREEN_ICON_DATA =
+            "com.android.systemui.util.LockScreenNotificationIconData";
+
+    private static boolean sHooked;
+    private static final java.util.concurrent.atomic.AtomicInteger sIconErrors =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    @Override
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
+        if (!SYSUI.equals(lp.packageName)) {
+            return;
+        }
+        IconPackSource.log("module loaded in " + lp.processName);
+        try {
+            XposedHelpers.findAndHookMethod(Application.class, "attach", Context.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                IconPackSource.init((Context) param.args[0]);
+                                installHooks(lp.classLoader);
+                            } catch (Throwable t) {
+                                IconPackSource.log("install hooks failed: " + t);
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            IconPackSource.log("attach hook failed: " + t);
+        }
+    }
+
+    private static synchronized void installHooks(ClassLoader cl) {
+        if (sHooked) {
+            return;
+        }
+        sHooked = true;
+        hookStatusBarIconView(cl);
+        hookNotificationHeader(cl);
+        hookLockScreen(cl);
+    }
+
+    // ---------------------------------------------------------------- 状态栏 / 通知小图标
+
+    private static void hookStatusBarIconView(ClassLoader cl) {
+        try {
+            Class<?> viewClass = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.StatusBarIconView", cl);
+            Class<?> iconClass = XposedHelpers.findClass(
+                    "com.android.internal.statusbar.StatusBarIcon", cl);
+
+            XposedHelpers.findAndHookMethod(viewClass, "getIcon", iconClass, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Object statusBarIcon = param.args[0];
+                        if (statusBarIcon == null) {
+                            return;
+                        }
+                        Object pkgObj = XposedHelpers.getObjectField(statusBarIcon, "pkg");
+                        String pkg = pkgObj instanceof String ? (String) pkgObj : null;
+                        Drawable themed = IconPackSource.themedDrawable(pkg);
+                        if (themed == null) {
+                            XposedHelpers.removeAdditionalInstanceField(param.thisObject, TAG_THEMED);
+                            return;
+                        }
+                        XposedHelpers.setAdditionalInstanceField(param.thisObject, TAG_THEMED,
+                                Boolean.TRUE);
+                        XposedHelpers.setAdditionalInstanceField(param.thisObject,
+                                TAG_THEMED_DRAWABLE, themed);
+                        param.setResult(themed);
+                    } catch (Throwable t) {
+                        if (sIconErrors.incrementAndGet() <= 5) {
+                            IconPackSource.log("getIcon hook error: " + t);
+                        }
+                    }
+                }
+            });
+            IconPackSource.log("hooked StatusBarIconView.getIcon");
+
+            // ColorOS 侧的图标加载扩展，通知图标走这条路径
+            try {
+                Class<?> ex = XposedHelpers.findClass(
+                        "com.android.systemui.statusbar.OplusStatusBarIconViewEx", cl);
+                XposedHelpers.findAndHookMethod(ex, "reloadIconFromContext", int.class, Context.class,
+                        iconClass, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                try {
+                                    Object statusBarIcon = param.args[2];
+                                    if (statusBarIcon == null) {
+                                        return;
+                                    }
+                                    Object pkgObj = XposedHelpers.getObjectField(statusBarIcon, "pkg");
+                                    String pkg = pkgObj instanceof String ? (String) pkgObj : null;
+                                    Drawable themed = IconPackSource.themedDrawable(pkg);
+                                    if (themed != null) {
+                                        param.setResult(themed);
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        });
+                IconPackSource.log("hooked OplusStatusBarIconViewEx.reloadIconFromContext");
+            } catch (Throwable t) {
+                IconPackSource.log("oplus reloadIconFromContext hook failed: " + t);
+            }
+
+            XC_MethodHook skipTint = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (XposedHelpers.getAdditionalInstanceField(param.thisObject, TAG_THEMED) != null) {
+                        param.setResult(null);
+                    }
+                }
+            };
+            try {
+                XposedHelpers.findAndHookMethod(viewClass, "setIconColor", int.class, boolean.class,
+                        skipTint);
+            } catch (Throwable t) {
+                IconPackSource.log("setIconColor hook failed: " + t);
+            }
+            try {
+                XposedHelpers.findAndHookMethod(viewClass, "setStaticDrawableColor", int.class,
+                        skipTint);
+            } catch (Throwable t) {
+                IconPackSource.log("setStaticDrawableColor hook failed: " + t);
+            }
+            try {
+                XposedHelpers.findAndHookMethod(viewClass, "setTintAlpha", float.class, skipTint);
+            } catch (Throwable t) {
+                IconPackSource.log("setTintAlpha hook failed: " + t);
+            }
+            // 换壁纸 / 亮暗切换会重新刷色，刷完把主题图标贴回去
+            try {
+                XposedHelpers.findAndHookMethod(viewClass, "onDarkChanged", java.util.ArrayList.class,
+                        float.class, int.class, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                Object d = XposedHelpers.getAdditionalInstanceField(
+                                        param.thisObject, TAG_THEMED_DRAWABLE);
+                                if (d instanceof Drawable && param.thisObject instanceof ImageView) {
+                                    ((ImageView) param.thisObject).setImageDrawable((Drawable) d);
+                                }
+                            }
+                        });
+            } catch (Throwable t) {
+                IconPackSource.log("onDarkChanged hook failed: " + t);
+            }
+        } catch (Throwable t) {
+            IconPackSource.log("StatusBarIconView hook failed: " + t);
+        }
+    }
+
+    // ---------------------------------------------------------------- 通知中心
+
+    private static void hookNotificationHeader(ClassLoader cl) {
+        Class<?> rowClass;
+        try {
+            rowClass = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow", cl);
+        } catch (Throwable t) {
+            IconPackSource.log("no ExpandableNotificationRow: " + t);
+            return;
+        }
+
+        // 通知中心卡片左侧 app 图标 = com.android.internal.widget.NotificationRowIconView(id=icon)
+        // 它继承 ImageView，不经过 StatusBarIconView 的图标加载路径，所以在行内容更新后直接替换。
+        try {
+            Class<?> wrapper = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.notification.row.wrapper.NotificationHeaderViewWrapper",
+                    cl);
+            XposedHelpers.findAndHookMethod(wrapper, "onContentUpdated", rowClass,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                if (param.args[0] instanceof View) {
+                                    View row = (View) param.args[0];
+                                    String pkg = pkgOfRow(param.args[0]);
+                                    applyRowIcon(row, pkg, avatarOfRow(row, pkg));
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            IconPackSource.log("hooked NotificationHeaderViewWrapper.onContentUpdated");
+        } catch (Throwable t) {
+            IconPackSource.log("NotificationHeaderViewWrapper hook failed: " + t);
+        }
+
+        // 图标是异步加载的，晚到的 setImageIcon / setImageDrawable / setImageBitmap 会覆盖我们贴的图，
+        // 这里在 setter 之后按 tag 回贴。NotificationRowIconView 没重写这些方法，必须挂 ImageView 上的。
+        try {
+            Class<?> rowIconView = XposedHelpers.findClass(
+                    "com.android.internal.widget.NotificationRowIconView", cl);
+            XposedHelpers.findAndHookMethod(rowIconView, "setImageIcon", Icon.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            reapplyRowIcon(param.thisObject);
+                        }
+                    });
+            IconPackSource.log("hooked NotificationRowIconView.setImageIcon");
+        } catch (Throwable t) {
+            IconPackSource.log("NotificationRowIconView hook failed: " + t);
+        }
+
+        hookImageViewSetters();
+        hookHeadsUp(cl);
+    }
+
+    // 横幅（heads-up）：ColorOS 17 走 HeadsUpTempViewCreator 现 inflate 一条临时通知行，
+    // 这条行不一定经过 NotificationHeaderViewWrapper.onContentUpdated，所以在 inflate 完成时就贴图。
+    private static void hookHeadsUp(ClassLoader cl) {
+        try {
+            Class<?> c = XposedHelpers.findClass(
+                    "com.oplus.systemui.notification.headsup.nssl.HeadsUpTempViewCreator$init$1", cl);
+            Class<?> entryClass = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.notification.collection.NotificationEntry", cl);
+            Class<?> controllerClass = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.notification.collection.render.NotifViewController", cl);
+            XposedHelpers.findAndHookMethod(c, "onInflationFinished", entryClass, controllerClass,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                String pkg = pkgOfEntry(param.args[0]);
+                                View row = viewOfController(param.args[1]);
+                                if (row == null) {
+                                    row = viewOfEntry(param.args[0]);
+                                }
+                                if (row != null) {
+                                    applyRowIcon(row, pkg, avatarOfEntry(param.args[0], pkg));
+                                }
+                            } catch (Throwable t) {
+                                IconPackSource.log("headsup apply error: " + t);
+                            }
+                        }
+                    });
+            IconPackSource.log("hooked HeadsUpTempViewCreator.onInflationFinished");
+        } catch (Throwable t) {
+            IconPackSource.log("headsup hook failed: " + t);
+        }
+    }
+
+    // ---------------------------------------------------------------- 锁屏 / 锁屏岛
+
+    private static void hookLockScreen(ClassLoader cl) {
+        // 锁屏岛胶囊卡片：图标从 getRoundedIcon(NotificationIconData) 出
+        try {
+            Class<?> card = XposedHelpers.findClass(CAPSULE_CARD, cl);
+            Class<?> iconData = XposedHelpers.findClass(CAPSULE_ICON_DATA, cl);
+            XposedHelpers.findAndHookMethod(card, "getRoundedIcon", iconData, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        if (!IconPackSource.lockEnabled() || param.args[0] == null) {
+                            return;
+                        }
+                        String pkg = str(XposedHelpers.callMethod(param.args[0], "getPackageName"));
+                        Drawable themed = IconPackSource.themedDrawable(pkg);
+                        if (themed == null) {
+                            return;
+                        }
+                        Drawable out = themed;
+                        Object entry = XposedHelpers.callMethod(param.args[0], "getEntry");
+                        Drawable avatar = avatarOfEntry(entry, pkg);
+                        if (avatar != null) {
+                            out = AvatarBadge.compose(IconPackSource.appContext(), avatar, themed,
+                                    pkg, AvatarBadge.dp(IconPackSource.appContext(), 40));
+                        }
+                        param.setResult(out);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            IconPackSource.log("hooked CapsuleNotificationCardView.getRoundedIcon");
+        } catch (Throwable t) {
+            IconPackSource.log("capsule hook failed: " + t);
+        }
+
+        // 锁屏通知列表的图标数据对象：直接改 getIcon() 的返回值
+        try {
+            Class<?> ls = XposedHelpers.findClass(LOCK_SCREEN_ICON_DATA, cl);
+            XposedHelpers.findAndHookMethod(ls, "getIcon", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        if (!IconPackSource.lockEnabled()) {
+                            return;
+                        }
+                        String pkg = str(XposedHelpers.callMethod(param.thisObject, "getPackageName"));
+                        Drawable themed = IconPackSource.themedDrawable(pkg);
+                        if (themed != null) {
+                            param.setResult(themed);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            IconPackSource.log("hooked LockScreenNotificationIconData.getIcon");
+        } catch (Throwable t) {
+            IconPackSource.log("lockscreen icon data hook failed: " + t);
+        }
+    }
+
+    // ---------------------------------------------------------------- 视图工具
+
+    private static View viewOfController(Object controller) {
+        for (String m : new String[]{"getView", "getRow"}) {
+            try {
+                Object o = XposedHelpers.callMethod(controller, m);
+                if (o instanceof View) {
+                    return (View) o;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static View viewOfEntry(Object entry) {
+        try {
+            Object o = XposedHelpers.callMethod(entry, "getRow");
+            if (o instanceof View) {
+                return (View) o;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static final int TAG_ROW_ICON = 0x5f0d1e01;
+    private static final String ROW_ICON_CLASS = "com.android.internal.widget.NotificationRowIconView";
+    private static final ThreadLocal<Boolean> sInReapply = new ThreadLocal<Boolean>() {
+        @Override
+        protected Boolean initialValue() {
+            return Boolean.FALSE;
+        }
+    };
+
+    private static void hookImageViewSetters() {
+        Class<?>[] types = {Drawable.class, android.graphics.Bitmap.class};
+        String[] names = {"setImageDrawable", "setImageBitmap"};
+        for (int i = 0; i < names.length; i++) {
+            try {
+                java.lang.reflect.Method m = ImageView.class.getDeclaredMethod(names[i], types[i]);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        reapplyRowIcon(param.thisObject);
+                    }
+                });
+                IconPackSource.log("hooked ImageView." + names[i]);
+            } catch (Throwable t) {
+                IconPackSource.log("ImageView." + names[i] + " hook failed: " + t);
+            }
+        }
+    }
+
+    private static void reapplyRowIcon(Object view) {
+        if (view == null || !ROW_ICON_CLASS.equals(view.getClass().getName())) {
+            return;
+        }
+        if (sInReapply.get()) {
+            return;
+        }
+        Object tag = ((View) view).getTag(TAG_ROW_ICON);
+        if (!(tag instanceof Drawable)) {
+            return;
+        }
+        if (((ImageView) view).getDrawable() == tag) {
+            return;
+        }
+        sInReapply.set(true);
+        try {
+            ((ImageView) view).setImageDrawable((Drawable) tag);
+        } finally {
+            sInReapply.set(false);
+        }
+    }
+
+    private static void applyRowIcon(View root, String pkg, Drawable avatar) {
+        if (root == null || pkg == null) {
+            return;
+        }
+        Drawable themed = IconPackSource.themedDrawable(pkg);
+        if (themed == null) {
+            return;
+        }
+        applyRowIconRecursive(root, themed, avatar, pkg, 0);
+    }
+
+    private static void applyRowIconRecursive(View v, Drawable themed, Drawable avatar, String pkg,
+                                              int depth) {
+        if (depth > 10) {
+            return;
+        }
+        if (v instanceof ImageView && ROW_ICON_CLASS.equals(v.getClass().getName()) && isAppIconId(v)) {
+            Drawable shown = themed;
+            if (avatar != null) {
+                Context ctx = IconPackSource.appContext();
+                shown = AvatarBadge.compose(ctx, avatar, themed, pkg, sizeOf(v));
+            }
+            ((ImageView) v).setImageDrawable(shown);
+            v.setTag(TAG_ROW_ICON, shown);
+        }
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                applyRowIconRecursive(g.getChildAt(i), themed, avatar, pkg, depth + 1);
+            }
+        }
+    }
+
+    private static int sizeOf(View v) {
+        if (v.getWidth() > 0) {
+            return v.getWidth();
+        }
+        Context ctx = IconPackSource.appContext();
+        return ctx == null ? 0 : AvatarBadge.dp(ctx, 28);
+    }
+
+    private static boolean isAppIconId(View v) {
+        int id = v.getId();
+        if (id == View.NO_ID) {
+            return false;
+        }
+        try {
+            return "icon".equals(v.getResources().getResourceEntryName(id));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    // ---------------------------------------------------------------- 数据取值
+
+    private static String str(Object o) {
+        return o instanceof String ? (String) o : null;
+    }
+
+    private static String pkgOfEntry(Object entry) {
+        try {
+            Object sbn = XposedHelpers.callMethod(entry, "getSbn");
+            return str(XposedHelpers.callMethod(sbn, "getPackageName"));
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static String pkgOfRow(Object row) {
+        try {
+            Object entry = XposedHelpers.callMethod(row, "getEntry");
+            return pkgOfEntry(entry);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 通知自带的头像。白名单（默认只放 IM 类）内才取，天猫/淘宝的广告大图进不来。 */
+    private static Drawable avatarOfRow(Object row, String pkg) {
+        if (row == null) {
+            return null;
+        }
+        try {
+            return avatarOfEntry(XposedHelpers.callMethod(row, "getEntry"), pkg);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Drawable avatarOfEntry(Object entry, String pkg) {
+        if (entry == null || pkg == null || !IconPackSource.avatarAllowed(pkg)) {
+            return null;
+        }
+        try {
+            Object sbn = XposedHelpers.callMethod(entry, "getSbn");
+            Object keyObj = XposedHelpers.callMethod(sbn, "getKey");
+            String cacheKey = AvatarCache.key(pkg, keyObj instanceof String ? (String) keyObj : null);
+            Drawable cached = AvatarCache.get(cacheKey);
+            if (cached != null) {
+                return cached;
+            }
+            Object notif = XposedHelpers.callMethod(sbn, "getNotification");
+            Drawable out = avatarFromNotification(notif);
+            if (out != null) {
+                AvatarCache.put(cacheKey, out);
+            }
+            return out;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** largeIcon 优先；没有再翻 MessagingStyle 的 Person 头像（微信/QQ 常走这条）。 */
+    private static Drawable avatarFromNotification(Object notif) {
+        Context ctx = IconPackSource.appContext();
+        if (ctx == null || notif == null) {
+            return null;
+        }
+        try {
+            Object large = XposedHelpers.callMethod(notif, "getLargeIcon");
+            if (large instanceof Icon) {
+                Drawable d = ((Icon) large).loadDrawable(ctx);
+                if (d != null) {
+                    return d;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object extrasObj = XposedHelpers.callMethod(notif, "getExtras");
+            if (!(extrasObj instanceof android.os.Bundle)) {
+                return null;
+            }
+            android.os.Bundle extras = (android.os.Bundle) extrasObj;
+            Drawable d = personIcon(extras.getParcelable("android.messagingUser"), ctx);
+            if (d != null) {
+                return d;
+            }
+            android.os.Parcelable[] msgs = extras.getParcelableArray("android.messages");
+            if (msgs != null && msgs.length > 0) {
+                Object last = msgs[msgs.length - 1];
+                if (last instanceof android.os.Bundle) {
+                    d = personIcon(((android.os.Bundle) last).getParcelable("sender_person"), ctx);
+                }
+            }
+            return d;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Drawable personIcon(Object person, Context ctx) {
+        if (person == null) {
+            return null;
+        }
+        try {
+            Object iconObj = XposedHelpers.callMethod(person, "getIcon");
+            if (iconObj instanceof Icon) {
+                return ((Icon) iconObj).loadDrawable(ctx);
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+}
