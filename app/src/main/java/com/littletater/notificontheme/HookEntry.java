@@ -640,6 +640,20 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
+    /** 取通知标题（多数 IM 推送里就是发送者昵称）。 */
+    private static String titleOf(Object notif) {
+        try {
+            android.os.Bundle extras = extrasOf(notif);
+            if (extras == null) {
+                return null;
+            }
+            CharSequence cs = extras.getCharSequence("android.title");
+            return cs == null ? null : cs.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private static Drawable avatarOfEntry(Object entry, String pkg) {
         if (entry == null || pkg == null || !IconPackSource.avatarAllowed(pkg)) {
             return null;
@@ -654,6 +668,13 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
             Object notif = XposedHelpers.callMethod(sbn, "getNotification");
             Drawable out = avatarFromNotification(notif, pkg);
+            if (out == null) {
+                // 推送里根本没有头像位：用发送者昵称补一张字母头像，别让大图位空着
+                out = LetterAvatar.of(IconPackSource.appContext(), titleOf(notif));
+                if (out != null) {
+                    av(pkg + " letter from title");
+                }
+            }
             av(pkg + " -> " + (out == null ? "null" : out.getClass().getSimpleName()));
             if (out != null) {
                 AvatarCache.put(cacheKey, out);
