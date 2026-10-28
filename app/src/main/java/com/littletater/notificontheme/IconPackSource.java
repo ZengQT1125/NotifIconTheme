@@ -103,10 +103,25 @@ final class IconPackSource {
         }
     }
 
+    /**
+     * 开关一律读最新配置，不要用构造时的快照：安装后第一次 provider 查询可能失败，
+     * 快照会把 avatar 永久钉在 false 上，直到用户再动一次设置。
+     */
+    private static ConfigStore.State live() {
+        if (sAppCtx == null) {
+            return null;
+        }
+        try {
+            return state();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /** 是否开了"头像 + 角标"。 */
     static boolean avatarEnabled() {
-        IconPackSource s = instance();
-        return s != null && s.avatar;
+        ConfigStore.State st = live();
+        return st != null && st.avatar && instance() != null;
     }
 
     /**
@@ -117,12 +132,13 @@ final class IconPackSource {
         if (pkg == null || pkg.isEmpty()) {
             return false;
         }
-        IconPackSource s = instance();
-        if (s == null || !s.avatar) {
+        ConfigStore.State st = live();
+        if (st == null || !st.avatar || instance() == null) {
             return false;
         }
-        if (!s.avatarPacks.isEmpty()) {
-            return s.avatarPacks.contains(pkg);
+        java.util.Set<String> packs = ConfigStore.parsePacks(st.avatarPacks);
+        if (!packs.isEmpty()) {
+            return packs.contains(pkg);
         }
         for (String p : DEFAULT_AVATAR_PACKS) {
             if (p.equals(pkg)) {
@@ -134,13 +150,13 @@ final class IconPackSource {
 
     /** 是否接管锁屏与锁屏岛。 */
     static boolean lockEnabled() {
-        IconPackSource s = instance();
-        return s != null && s.lock;
+        ConfigStore.State st = live();
+        return st != null && st.lock && instance() != null;
     }
 
     static float scale() {
-        IconPackSource s = instance();
-        return s == null ? 0.90f : s.scale;
+        ConfigStore.State st = live();
+        return st == null ? 0.90f : st.scale;
     }
 
     static Drawable themedDrawable(String pkg) {

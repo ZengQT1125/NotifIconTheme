@@ -226,15 +226,45 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 if (param.args[0] instanceof View) {
                                     View row = (View) param.args[0];
                                     String pkg = pkgOfRow(param.args[0]);
+                                    av("hdr " + pkg);
                                     applyRowIcon(row, pkg, avatarOfRow(row, pkg));
                                 }
-                            } catch (Throwable ignored) {
+                            } catch (Throwable t) {
+                                av("hdr err " + t);
                             }
                         }
                     });
             IconPackSource.log("hooked NotificationHeaderViewWrapper.onContentUpdated");
         } catch (Throwable t) {
             IconPackSource.log("NotificationHeaderViewWrapper hook failed: " + t);
+        }
+
+        // ColorOS 的分组/聚合通知走 OPLUS 扩展 wrapper，同样在内容更新后补一次贴图。
+        try {
+            Class<?> oplus = XposedHelpers.findClass(
+                    "com.oplus.systemui.statusbar.notification.row.wrapper.OplusNotificationHeaderViewWrapperExImp",
+                    cl);
+            XC_MethodHook oplusCb = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Object rowObj = param.args[0];
+                        if (rowObj instanceof View) {
+                            View row = (View) rowObj;
+                            String pkg = pkgOfRow(rowObj);
+                            av("oplus " + pkg);
+                            applyRowIcon(row, pkg, avatarOfRow(row, pkg));
+                        }
+                    } catch (Throwable t) {
+                        av("oplus err " + t);
+                    }
+                }
+            };
+            XposedHelpers.findAndHookMethod(oplus, "proxyOnContentUpdated", rowClass, oplusCb);
+            XposedHelpers.findAndHookMethod(oplus, "initBind", rowClass, oplusCb);
+            IconPackSource.log("hooked OplusNotificationHeaderViewWrapperExImp");
+        } catch (Throwable t) {
+            IconPackSource.log("oplus wrapper hook failed: " + t);
         }
 
         // 图标是异步加载的，晚到的 setImageIcon / setImageDrawable / setImageBitmap 会覆盖我们贴的图，
@@ -434,11 +464,10 @@ public class HookEntry implements IXposedHookLoadPackage {
             return;
         }
         Drawable themed = IconPackSource.themedDrawable(pkg);
+        av("row " + pkg + " themed=" + (themed != null) + " av=" + (avatar != null)
+                + " allow=" + IconPackSource.avatarAllowed(pkg));
         if (themed == null) {
             return;
-        }
-        if (IconPackSource.avatarAllowed(pkg)) {
-            av("apply " + pkg + " avatar=" + (avatar == null ? "null" : "ok"));
         }
         applyRowIconRecursive(root, themed, avatar, pkg, 0);
     }
