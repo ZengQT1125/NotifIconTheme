@@ -346,6 +346,7 @@ public class AvatarWhitelistActivity extends Activity {
         SharedPreferences.Editor ed = ConfigStore.prefs(this).edit();
         ed.putString(ConfigStore.KEY_AVATAR_PACKS, ConfigStore.joinPacks(selected));
         ed.apply();
+        ConfigStore.writeMirror(this, ConfigStore.fromPrefs(this));
     }
 
     // ---------------------------------------------------------------- 列表

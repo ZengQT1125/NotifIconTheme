@@ -29,6 +29,8 @@ final class FrameworkHooks {
     private static final String[] DEBUG_DUMP_PACKAGES = {"com.ss.android.ugc.aweme"};
 
     private static Context sCtx;
+    private static final java.util.concurrent.atomic.AtomicInteger sLog =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private FrameworkHooks() {
     }
@@ -44,7 +46,11 @@ final class FrameworkHooks {
                         return;
                     }
                     dumpIfWanted(n);
-                    if (keep(n)) {
+                    boolean k = keep(n);
+                    if (sLog.incrementAndGet() <= 30) {
+                        IconPackSource.log("strip " + packageOf(n) + " keep=" + k);
+                    }
+                    if (k) {
                         param.setResult(n);
                     }
                 }

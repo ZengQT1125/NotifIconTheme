@@ -4,6 +4,7 @@
     <!-- Android 11+ 包可见性：不声明 queries 的话 queryIntentActivities 只返回系统那几个应用，
          白名单列表就只剩 6 项，微信这些全查不到。 -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
 
     <queries>
         <intent>

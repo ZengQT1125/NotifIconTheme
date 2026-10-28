@@ -57,6 +57,8 @@ final class IconPackSource {
     };
 
     private static Context sAppCtx;
+    private static final java.util.concurrent.atomic.AtomicInteger sCfgLog =
+            new java.util.concurrent.atomic.AtomicInteger();
     private static IconPackSource sInstance;
     private static String sSignature;
     private static ConfigStore.State sState;
@@ -199,6 +201,10 @@ final class IconPackSource {
         }
         sState = st;
         sStateAt = now;
+        if (sCfgLog.incrementAndGet() <= 20) {
+            log("cfg avatar=" + st.avatar + " lock=" + st.lock + " scale=" + st.scale
+                    + " packs=" + ConfigStore.parsePacks(st.avatarPacks).size());
+        }
         return sState;
     }
 

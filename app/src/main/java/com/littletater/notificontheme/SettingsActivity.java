@@ -86,6 +86,11 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 每次打开都把配置镜像进 Settings.Global：SystemUI 那边不依赖本进程，本进程会被省电策略冻结
+        try {
+            ConfigStore.writeMirror(this, ConfigStore.fromPrefs(this));
+        } catch (Throwable ignored) {
+        }
         dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
         colorBg = dark ? 0xFF000000 : 0xFFF7F7F7;
@@ -343,6 +348,7 @@ public class SettingsActivity extends Activity {
         ed.putString(ConfigStore.KEY_PACK, selectedPack);
         ed.putFloat(ConfigStore.KEY_SCALE, 0.6f + scaleBar.getProgress() / 100f);
         ed.apply();
+        ConfigStore.writeMirror(this, ConfigStore.fromPrefs(this));
         Toast.makeText(this, "已保存，5 秒内生效", Toast.LENGTH_SHORT).show();
     }
 
