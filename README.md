@@ -99,6 +99,7 @@ aapt2 那一步仍然可能挂。CI 在 Linux 上是 ASCII 路径，没这个问
 
 | versionName | 内容 |
 | --- | --- |
+| 2.5 | 抖音私信这类走 opush 推送通道的通知也能取到头像（`extras[oplus_small_icon]`，与 app 图标像素比对后判定） |
 | 2.4 | 首页副标题与白名单页同口径（只数已安装） |
 | 2.3 | 白名单只列本机已安装应用 |
 | 2.2 | 头像白名单 + LRU 缓存 + MessagingStyle 兜底 |

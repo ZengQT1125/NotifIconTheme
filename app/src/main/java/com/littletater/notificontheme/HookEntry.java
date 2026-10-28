@@ -2,10 +2,16 @@ package com.littletater.notificontheme;
 
 import android.app.Application;
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.view.View;
 import android.widget.ImageView;
+
+import java.util.HashMap;
+import java.util.Map;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -525,7 +531,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                 return cached;
             }
             Object notif = XposedHelpers.callMethod(sbn, "getNotification");
-            Drawable out = avatarFromNotification(notif);
+            Drawable out = avatarFromNotification(notif, pkg);
             if (out != null) {
                 AvatarCache.put(cacheKey, out);
             }
@@ -535,8 +541,15 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    /** largeIcon 优先；没有再翻 MessagingStyle 的 Person 头像（微信/QQ 常走这条）。 */
-    private static Drawable avatarFromNotification(Object notif) {
+    /**
+     * 头像来源，按命中率排：
+     *   1) getLargeIcon() —— app 自己发的图（微信/QQ 常见）
+     *   2) MessagingStyle 的 Person 头像
+     *   3) extras 里的 oplus_small_icon —— 走 opush 推送通道的 IM（抖音私信就是这条），
+     *      推送里带的是发送者头像位图，没有 largeIcon、没有 MessagingStyle。
+     *      万一它其实就是 app logo，跟应用图标比一下像素，像就丢掉。
+     */
+    private static Drawable avatarFromNotification(Object notif, String pkg) {
         Context ctx = IconPackSource.appContext();
         if (ctx == null || notif == null) {
             return null;
@@ -566,13 +579,102 @@ public class HookEntry implements IXposedHookLoadPackage {
                 Object last = msgs[msgs.length - 1];
                 if (last instanceof android.os.Bundle) {
                     d = personIcon(((android.os.Bundle) last).getParcelable("sender_person"), ctx);
+                    if (d != null) {
+                        return d;
+                    }
                 }
+            }
+            return pushAvatar(extras, pkg, ctx);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** opush 推送通道塞的头像位图：extras["oplus_small_icon"]。 */
+    private static Drawable pushAvatar(android.os.Bundle extras, String pkg, Context ctx) {
+        try {
+            Object raw = extras.getParcelable("oplus_small_icon");
+            if (!(raw instanceof Icon)) {
+                return null;
+            }
+            Drawable d = ((Icon) raw).loadDrawable(ctx);
+            if (!(d instanceof BitmapDrawable)) {
+                return null;
+            }
+            Bitmap bm = ((BitmapDrawable) d).getBitmap();
+            if (bm == null || bm.getWidth() < 64 || bm.getWidth() != bm.getHeight()) {
+                return null;
+            }
+            boolean appLike = looksLikeAppIcon(bm, pkg, ctx);
+            if (sPushLog.get() < 20) {
+                sPushLog.incrementAndGet();
+                IconPackSource.log("push avatar pkg=" + pkg + " size=" + bm.getWidth()
+                        + " appIconLike=" + appLike);
+            }
+            if (appLike) {
+                return null;
             }
             return d;
         } catch (Throwable t) {
             return null;
         }
     }
+
+    /** 32x32 平均色签名比对：跟应用图标长得一样就不是头像。 */
+    private static final Map<String, int[]> sAppIconSig = new HashMap<>();
+    private static final java.util.concurrent.atomic.AtomicInteger sPushLog =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    private static boolean looksLikeAppIcon(Bitmap bm, String pkg, Context ctx) {
+        try {
+            int[] appSig = sAppIconSig.get(pkg);
+            if (appSig == null) {
+                Drawable appIcon = ctx.getPackageManager().getApplicationIcon(pkg);
+                Bitmap appBm = toBitmap(appIcon, 32);
+                if (appBm == null) {
+                    return false;
+                }
+                appSig = signature(appBm);
+                sAppIconSig.put(pkg, appSig);
+            }
+            Bitmap small = Bitmap.createScaledBitmap(bm, 32, 32, true);
+            int[] sig = signature(small);
+            int diff = 0;
+            for (int i = 0; i < sig.length; i++) {
+                diff += Math.abs(sig[i] - appSig[i]);
+            }
+            return diff / sig.length < 16;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static Bitmap toBitmap(Drawable d, int size) {
+        if (d == null) {
+            return null;
+        }
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        d.setBounds(0, 0, size, size);
+        d.draw(c);
+        return out;
+    }
+
+    private static int[] signature(Bitmap bm) {
+        int[] sig = new int[bm.getWidth() * bm.getHeight()];
+        int i = 0;
+        for (int y = 0; y < bm.getHeight(); y++) {
+            for (int x = 0; x < bm.getWidth(); x++) {
+                int p = bm.getPixel(x, y);
+                int r = (p >> 16) & 0xFF;
+                int g = (p >> 8) & 0xFF;
+                int b = p & 0xFF;
+                sig[i++] = (r + g + b) / 3;
+            }
+        }
+        return sig;
+    }
+
 
     private static Drawable personIcon(Object person, Context ctx) {
         if (person == null) {
