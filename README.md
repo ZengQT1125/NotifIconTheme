@@ -68,8 +68,18 @@ Actions → build → Artifacts → NotifIconTheme-<sha>.zip
 
 签名用的是仓库里 `keystore/spud.jks`（密码 `android`，alias `spud`），
 所以每次 CI 出的 APK 签名一致，可以直接覆盖安装。
-想换成自己的签名：把 keystore base64 后放进 secret `SPUD_KEYSTORE`，
-再设 `SPUD_STORE_PASS` / `SPUD_KEY_ALIAS` / `SPUD_KEY_PASS`。
+
+> ⚠️ 仓库是公开的，这个 keystore 也一起公开了 —— 别人拿它能签出「同签名」的 APK。
+> 只在自己设备上装、只认自己打出来的包，风险可控；想彻底干净就按下面换成 secrets 里的私钥，
+> 换之前先把新 keystore 装到手机上验证一次，否则已装版本没法覆盖。
+
+换成自己的签名：
+
+```bash
+base64 -w0 keystore/spud.jks > k.txt     # 内容贴进 secret SPUD_KEYSTORE
+```
+再设 `SPUD_STORE_PASS` / `SPUD_KEY_ALIAS` / `SPUD_KEY_PASS` 三个 secret，
+然后把 `keystore/spud.jks` 从仓库里删掉（`git rm keystore/spud.jks`）。
 
 ### 本地
 
