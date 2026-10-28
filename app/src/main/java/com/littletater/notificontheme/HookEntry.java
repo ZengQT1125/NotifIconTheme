@@ -277,6 +277,16 @@ public class HookEntry implements IXposedHookLoadPackage {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
                             reapplyRowIcon(param.thisObject);
+                            // Icon 自带 resPackage，聚合/分组行也能拿到包名
+                            String pkg = null;
+                            Object icon = param.args[0];
+                            if (icon instanceof Icon) {
+                                try {
+                                    pkg = ((Icon) icon).getResPackage();
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                            applyRowIconToView((View) param.thisObject, pkg);
                         }
                     });
             IconPackSource.log("hooked NotificationRowIconView.setImageIcon");
@@ -428,6 +438,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         reapplyRowIcon(param.thisObject);
+                        applyRowIconToView((View) param.thisObject, null);
                     }
                 });
                 IconPackSource.log("hooked ImageView." + names[i]);
@@ -457,6 +468,68 @@ public class HookEntry implements IXposedHookLoadPackage {
         } finally {
             sInReapply.set(false);
         }
+    }
+
+    /**
+     * 兜底路径：不管哪条 wrapper 更新了行，只要 NotificationRowIconView#icon 被塞了新图，
+     * 就在这里按"自身 Icon 的 resPackage → 祖先 ExpandableNotificationRow 的 entry"顺序取包名，
+     * 重新贴主题图标（白名单内再叠头像 + 角标）。抖音这类推送通道的聚合行只走这条。
+     */
+    private static void applyRowIconToView(View v, String pkgHint) {
+        if (v == null || !ROW_ICON_CLASS.equals(v.getClass().getName()) || !isAppIconId(v)) {
+            return;
+        }
+        if (sInReapply.get()) {
+            return;
+        }
+        String pkg = pkgHint == null || pkgHint.isEmpty() ? pkgOfAncestorRow(v) : pkgHint;
+        if (pkg == null || pkg.isEmpty()) {
+            return;
+        }
+        Drawable themed = IconPackSource.themedDrawable(pkg);
+        if (themed == null) {
+            return;
+        }
+        Drawable avatar = avatarOfAncestorRow(v, pkg);
+        Drawable shown = themed;
+        if (avatar != null) {
+            shown = AvatarBadge.compose(IconPackSource.appContext(), avatar, themed, pkg, sizeOf(v));
+        }
+        if (((ImageView) v).getDrawable() == shown) {
+            return;
+        }
+        av("view " + pkg + " av=" + (avatar != null));
+        sInReapply.set(true);
+        try {
+            ((ImageView) v).setImageDrawable(shown);
+            v.setTag(TAG_ROW_ICON, shown);
+        } catch (Throwable t) {
+            av("view err " + t);
+        } finally {
+            sInReapply.set(false);
+        }
+    }
+
+    private static View ancestorRow(View v) {
+        android.view.ViewParent p = v == null ? null : v.getParent();
+        while (p instanceof View) {
+            View cur = (View) p;
+            if (cur.getClass().getName().endsWith("ExpandableNotificationRow")) {
+                return cur;
+            }
+            p = cur.getParent();
+        }
+        return null;
+    }
+
+    private static String pkgOfAncestorRow(View v) {
+        View row = ancestorRow(v);
+        return row == null ? null : pkgOfRow(row);
+    }
+
+    private static Drawable avatarOfAncestorRow(View v, String pkg) {
+        View row = ancestorRow(v);
+        return row == null ? null : avatarOfRow(row, pkg);
     }
 
     private static void applyRowIcon(View root, String pkg, Drawable avatar) {
