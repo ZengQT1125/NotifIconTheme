@@ -712,7 +712,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             av(pkg + " msgs err " + t);
         }
-        return pushAvatar(extras, pkg, ctx);
+        return pushAvatar(extras, pkg, ctx, smallIconOf(notif));
     }
 
     /**
@@ -753,14 +753,15 @@ public class HookEntry implements IXposedHookLoadPackage {
     }
 
     /** 推送通道通知里翻头像：oplus_small_icon 优先，找不到就扫所有图标/头像型 extras。 */
-    private static Drawable pushAvatar(android.os.Bundle extras, String pkg, Context ctx) {
+    private static Drawable pushAvatar(android.os.Bundle extras, String pkg, Context ctx,
+                                       Icon smallIcon) {
         Object primary = null;
         try {
             primary = extras.getParcelable("oplus_small_icon");
         } catch (Throwable t) {
             av(pkg + " oplus_small_icon err " + t);
         }
-        Drawable d = bitmapAvatar(primary, pkg, ctx, "oplus_small_icon");
+        Drawable d = bitmapAvatar(primary, pkg, ctx, "oplus_small_icon", smallIcon);
         if (d != null) {
             return d;
         }
@@ -779,7 +780,7 @@ public class HookEntry implements IXposedHookLoadPackage {
             } catch (Throwable t) {
                 continue;
             }
-            d = bitmapAvatar(raw, pkg, ctx, key);
+            d = bitmapAvatar(raw, pkg, ctx, key, smallIcon);
             if (d != null) {
                 return d;
             }
@@ -787,7 +788,8 @@ public class HookEntry implements IXposedHookLoadPackage {
         return null;
     }
 
-    private static Drawable bitmapAvatar(Object raw, String pkg, Context ctx, String key) {
+    private static Drawable bitmapAvatar(Object raw, String pkg, Context ctx, String key,
+                                        Icon smallIcon) {
         if (raw == null) {
             return null;
         }
@@ -811,7 +813,7 @@ public class HookEntry implements IXposedHookLoadPackage {
             if (bm == null) {
                 return null;
             }
-            boolean appLike = looksLikeAppIcon(bm, pkg, ctx);
+            boolean appLike = looksLikeAppIcon(bm, pkg, ctx, smallIcon);
             av(pkg + " " + key + " " + bm.getWidth() + "x" + bm.getHeight()
                     + " appIconLike=" + appLike);
             if (bm.getWidth() < 64 || bm.getWidth() != bm.getHeight()) {
@@ -831,28 +833,71 @@ public class HookEntry implements IXposedHookLoadPackage {
     /** 32x32 平均色签名比对：跟应用图标长得一样就不是头像。 */
     private static final Map<String, int[]> sAppIconSig = new HashMap<>();
 
-    private static boolean looksLikeAppIcon(Bitmap bm, String pkg, Context ctx) {
+    private static boolean looksLikeAppIcon(Bitmap bm, String pkg, Context ctx, Icon smallIcon) {
         try {
+            Bitmap small = Bitmap.createScaledBitmap(bm, 32, 32, true);
+            int[] sig = signature(small);
             int[] appSig = sAppIconSig.get(pkg);
             if (appSig == null) {
                 Drawable appIcon = ctx.getPackageManager().getApplicationIcon(pkg);
                 Bitmap appBm = toBitmap(appIcon, 32);
-                if (appBm == null) {
-                    return false;
+                appSig = appBm == null ? null : signature(appBm);
+                if (appSig != null) {
+                    sAppIconSig.put(pkg, appSig);
                 }
-                appSig = signature(appBm);
-                sAppIconSig.put(pkg, appSig);
             }
-            Bitmap small = Bitmap.createScaledBitmap(bm, 32, 32, true);
-            int[] sig = signature(small);
-            int diff = 0;
-            for (int i = 0; i < sig.length; i++) {
-                diff += Math.abs(sig[i] - appSig[i]);
+            if (appSig != null && similar(sig, appSig)) {
+                return true;
             }
-            return diff / sig.length < 16;
+            // 主题包图标也可能是推送里塞的那张"应用图标"，一起当基准
+            Drawable themed = IconPackSource.themedDrawable(pkg);
+            Bitmap themedBm = toBitmap(themed, 32);
+            if (themedBm != null && similar(sig, signature(themedBm))) {
+                return true;
+            }
+            // 通知自己的 smallIcon（抖音 MCS 推送就是拿它当"头像"塞进来的）
+            if (smallIcon != null) {
+                Bitmap smBm = toBitmap(smallIcon.loadDrawable(ctx), 32);
+                if (smBm != null && similar(sig, signature(smBm))) {
+                    return true;
+                }
+            }
+            return false;
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /** 32x32 亮度签名逐点平均差 < 24 视为同一张图。 */
+    private static boolean similar(int[] a, int[] b) {
+        if (a == null || b == null || a.length != b.length) {
+            return false;
+        }
+        int diff = 0;
+        for (int i = 0; i < a.length; i++) {
+            diff += Math.abs(a[i] - b[i]);
+        }
+        return diff / a.length < 24;
+    }
+
+    /** Notification.getSmallIcon() 同样不能用 Xposed 的 #exact 查找。 */
+    private static Icon smallIconOf(Object notif) {
+        if (notif == null) {
+            return null;
+        }
+        for (Class<?> c = notif.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                java.lang.reflect.Method m = c.getDeclaredMethod("getSmallIcon");
+                m.setAccessible(true);
+                Object v = m.invoke(notif);
+                if (v instanceof Icon) {
+                    return (Icon) v;
+                }
+            } catch (NoSuchMethodException ignored) {
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
     }
 
     private static Bitmap toBitmap(Drawable d, int size) {

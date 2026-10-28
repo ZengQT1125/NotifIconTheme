@@ -10,8 +10,8 @@ android {
         applicationId = "com.littletater.notificontheme"
         minSdk = 29
         targetSdk = 36
-        versionCode = 11
-        versionName = "3.1"
+        versionCode = 12
+        versionName = "3.2"
     }
 
     // 签名固定：换签名 = 必须卸载重装，模块配置也一起丢。
