@@ -276,7 +276,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                     new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            reapplyRowIcon(param.thisObject);
+                            dropAvatarCache((View) param.thisObject);
                             // Icon 自带 resPackage，聚合/分组行也能拿到包名
                             String pkg = null;
                             Object icon = param.args[0];
@@ -300,6 +300,87 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     // 横幅（heads-up）：ColorOS 17 走 HeadsUpTempViewCreator 现 inflate 一条临时通知行，
     // 这条行不一定经过 NotificationHeaderViewWrapper.onContentUpdated，所以在 inflate 完成时就贴图。
+    private static final java.util.concurrent.atomic.AtomicInteger sBannerDump =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /**
+     * 横幅的图标不是 NotificationRowIconView，类名各家不一样，
+     * 所以不认类名：谁的图跟应用图标长得一样，就换成主题图标。
+     */
+    private static void replaceAppIconImages(View root, String pkg) {
+        if (root == null || pkg == null || pkg.isEmpty()) {
+            return;
+        }
+        try {
+            replaceAppIconRecursive(root, pkg, 0, new int[]{40});
+        } catch (Throwable t) {
+            av("banner err " + t);
+        }
+    }
+
+    private static void replaceAppIconRecursive(View v, String pkg, int depth, int[] budget) {
+        if (v == null || depth > 8 || budget[0] <= 0) {
+            return;
+        }
+        budget[0]--;
+        if (v instanceof ImageView) {
+            ImageView iv = (ImageView) v;
+            Drawable d = iv.getDrawable();
+            if (d instanceof BitmapDrawable) {
+                Bitmap bm = ((BitmapDrawable) d).getBitmap();
+                Drawable themed = IconPackSource.themedDrawable(pkg);
+                if (bm != null && themed != null && d != iv.getTag(TAG_BANNER_ICON)
+                        && looksLikeAppIcon(bm, pkg, IconPackSource.appContext(), null)) {
+                    sInReapply.set(true);
+                    try {
+                        iv.setImageDrawable(themed);
+                        iv.setTag(TAG_BANNER_ICON, themed);
+                    } catch (Throwable ignored) {
+                    } finally {
+                        sInReapply.set(false);
+                    }
+                    av("banner icon -> themed " + pkg);
+                }
+            }
+        }
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                replaceAppIconRecursive(g.getChildAt(i), pkg, depth + 1, budget);
+            }
+        }
+    }
+
+    /** 诊断用：把视图树打成一行一行的，只在打开「诊断日志」时调用。 */
+    private static void dumpTree(View v, int depth) {
+        if (v == null || depth > 8) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < depth; i++) {
+            sb.append("  ");
+        }
+        sb.append(v.getClass().getSimpleName());
+        try {
+            int id = v.getId();
+            if (id != View.NO_ID) {
+                sb.append('#').append(v.getResources().getResourceEntryName(id));
+            }
+        } catch (Throwable ignored) {
+        }
+        if (v instanceof ImageView) {
+            Drawable d = ((ImageView) v).getDrawable();
+            sb.append(" drawable=").append(d == null ? "null" : d.getClass().getSimpleName());
+        }
+        av(sb.toString());
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                dumpTree(g.getChildAt(i), depth + 1);
+            }
+        }
+    }
+
     private static void hookHeadsUp(ClassLoader cl) {
         try {
             Class<?> c = XposedHelpers.findClass(
@@ -320,6 +401,10 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 }
                                 if (row != null) {
                                     applyRowIcon(row, pkg, avatarOfEntry(param.args[0], pkg));
+                                    replaceAppIconImages(row, pkg);
+                                }
+                                if (IconPackSource.debug() && sBannerDump.incrementAndGet() <= 2) {
+                                    dumpTree(row, 0);
                                 }
                             } catch (Throwable t) {
                                 IconPackSource.log("headsup apply error: " + t);
@@ -420,6 +505,8 @@ public class HookEntry implements IXposedHookLoadPackage {
     }
 
     private static final int TAG_ROW_ICON = 0x5f0d1e01;
+    /** 横幅里被我们换成主题图标的 ImageView（用 int key，别去动宿主自己的 tag）。 */
+    private static final int TAG_BANNER_ICON = 0x5f0d1e02;
     private static final String ROW_ICON_CLASS = "com.android.internal.widget.NotificationRowIconView";
     private static final ThreadLocal<Boolean> sInReapply = new ThreadLocal<Boolean>() {
         @Override
@@ -437,8 +524,30 @@ public class HookEntry implements IXposedHookLoadPackage {
                 XposedBridge.hookMethod(m, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
-                        reapplyRowIcon(param.thisObject);
-                        applyRowIconToView((View) param.thisObject, null);
+                        View v = (View) param.thisObject;
+                        if (v == null || sInReapply.get()) {
+                            return;
+                        }
+                        Drawable incoming = param.args.length > 0 && param.args[0] instanceof Drawable
+                                ? (Drawable) param.args[0] : null;
+
+                        // 横幅这类被我们换过的位置：宿主又写了新图，贴回主题图标
+                        Object bannerTag = v.getTag(TAG_BANNER_ICON);
+                        if (bannerTag instanceof Drawable) {
+                            if (incoming != bannerTag) {
+                                putDrawable(v, (Drawable) bannerTag);
+                            }
+                            return;
+                        }
+                        if (!ROW_ICON_CLASS.equals(v.getClass().getName())) {
+                            return;
+                        }
+                        // 宿主换了图：息屏时它先给占位图，亮屏后才把真头像写进来。
+                        // 这时必须把头像缓存作废重算，否则一直显示那张占位图。
+                        if (incoming != null && incoming != v.getTag(TAG_ROW_ICON)) {
+                            dropAvatarCache(v);
+                        }
+                        applyRowIconToView(v, null);
                     }
                 });
                 IconPackSource.log("hooked ImageView." + names[i]);
@@ -448,27 +557,66 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    private static void reapplyRowIcon(Object view) {
-        if (view == null || !ROW_ICON_CLASS.equals(view.getClass().getName())) {
-            return;
-        }
-        if (sInReapply.get()) {
-            return;
-        }
-        Object tag = ((View) view).getTag(TAG_ROW_ICON);
-        if (!(tag instanceof Drawable)) {
-            return;
-        }
-        if (((ImageView) view).getDrawable() == tag) {
-            return;
-        }
+    private static void putDrawable(View v, Drawable d) {
         sInReapply.set(true);
         try {
-            ((ImageView) view).setImageDrawable((Drawable) tag);
+            ((ImageView) v).setImageDrawable(d);
+        } catch (Throwable ignored) {
         } finally {
             sInReapply.set(false);
         }
     }
+
+    /** 通知 key：缓存按 (包名|通知 key) 存，宿主换图时只作废这一条。 */
+    private static String keyOfAncestorRow(View v) {
+        try {
+            View row = ancestorRow(v);
+            if (row == null) {
+                return null;
+            }
+            Object entry = XposedHelpers.callMethod(row, "getEntry");
+            Object sbn = XposedHelpers.callMethod(entry, "getSbn");
+            Object key = XposedHelpers.callMethod(sbn, "getKey");
+            return key instanceof String ? (String) key : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static void dropAvatarCache(View v) {
+        try {
+            String pkg = pkgOfAncestorRow(v);
+            String key = keyOfAncestorRow(v);
+            if (pkg != null && key != null) {
+                AvatarCache.remove(AvatarCache.key(pkg, key));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 纯白 / 全透明的占位图不算头像。 */
+    private static boolean isBlank(Bitmap bm) {
+        try {
+            Bitmap s = Bitmap.createScaledBitmap(bm, 16, 16, true);
+            int white = 0;
+            for (int y = 0; y < 16; y++) {
+                for (int x = 0; x < 16; x++) {
+                    int c = s.getPixel(x, y);
+                    if (android.graphics.Color.alpha(c) < 16) {
+                        white++;
+                    } else if (android.graphics.Color.red(c) > 240
+                            && android.graphics.Color.green(c) > 240
+                            && android.graphics.Color.blue(c) > 240) {
+                        white++;
+                    }
+                }
+            }
+            return white >= 236;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
 
     /**
      * 兜底路径：不管哪条 wrapper 更新了行，只要 NotificationRowIconView#icon 被塞了新图，
@@ -677,6 +825,10 @@ public class HookEntry implements IXposedHookLoadPackage {
             av(pkg + " large=" + (large == null ? "null" : large.getClass().getSimpleName()));
             if (large instanceof Icon) {
                 Drawable d = ((Icon) large).loadDrawable(ctx);
+                if (d instanceof BitmapDrawable && isBlank(((BitmapDrawable) d).getBitmap())) {
+                    av(pkg + " large blank");
+                    d = null;
+                }
                 if (d != null) {
                     return d;
                 }

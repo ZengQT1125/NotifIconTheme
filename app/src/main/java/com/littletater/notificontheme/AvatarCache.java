@@ -39,6 +39,13 @@ final class AvatarCache {
         }
     }
 
+    /** 宿主换了新图（比如息屏期间拿到占位图、亮屏后才拿到真头像）时作废这一条。 */
+    static synchronized void remove(String key) {
+        if (key != null) {
+            CACHE.remove(key);
+        }
+    }
+
     static synchronized void clear() {
         CACHE.clear();
     }
