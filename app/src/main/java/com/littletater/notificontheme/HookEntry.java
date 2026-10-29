@@ -440,12 +440,14 @@ public class HookEntry implements IXposedHookLoadPackage {
                         }
                         String pkg = str(XposedHelpers.callMethod(param.args[0], "getPackageName"));
                         Drawable themed = IconPackSource.themedDrawable(pkg);
-                        if (themed == null) {
-                            return;
-                        }
                         Drawable out = themed;
                         Object entry = XposedHelpers.callMethod(param.args[0], "getEntry");
                         Drawable avatar = avatarOfEntry(entry, pkg);
+                        avAlways("capsule pkg=" + pkg + " themed=" + (themed != null)
+                                + " avatar=" + (avatar != null));
+                        if (themed == null) {
+                            return;
+                        }
                         if (avatar != null) {
                             out = AvatarBadge.compose(IconPackSource.appContext(), avatar, themed,
                                     pkg, AvatarBadge.dp(IconPackSource.appContext(), 40));
@@ -472,6 +474,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                         }
                         String pkg = str(XposedHelpers.callMethod(param.thisObject, "getPackageName"));
                         Drawable themed = IconPackSource.themedDrawable(pkg);
+                        avAlways("lsicon pkg=" + pkg + " themed=" + (themed != null));
                         if (themed != null) {
                             param.setResult(themed);
                         }
@@ -515,6 +518,15 @@ public class HookEntry implements IXposedHookLoadPackage {
     /** 横幅里被我们换成主题图标的 ImageView（用 int key，别去动宿主自己的 tag）。 */
     private static final int TAG_BANNER_ICON = 0x5f0d1e02;
     private static final String ROW_ICON_CLASS = "com.android.internal.widget.NotificationRowIconView";
+
+    /**
+     * 通知行左侧那颗应用图标：AOSP 是 NotificationRowIconView，
+     * ColorOS 分组/锁屏行是 OplusGroupNotificationRowIconView（同 id "icon"）。
+     * 按类名后缀认，别按全等认。
+     */
+    private static boolean isRowIconView(View v) {
+        return v != null && v.getClass().getName().endsWith("NotificationRowIconView");
+    }
     private static final ThreadLocal<Boolean> sInReapply = new ThreadLocal<Boolean>() {
         @Override
         protected Boolean initialValue() {
@@ -546,7 +558,15 @@ public class HookEntry implements IXposedHookLoadPackage {
                             }
                             return;
                         }
-                        if (!ROW_ICON_CLASS.equals(v.getClass().getName())) {
+                        if (!isRowIconView(v)) {
+                            if (incoming instanceof BitmapDrawable) {
+                                String sig = v.getClass().getName() + "#" + idNameOf(v);
+                                if (sViewSeen.add(sig)) {
+                                    avAlways("view " + sig + " bmp="
+                                            + ((BitmapDrawable) incoming).getBitmap().getWidth()
+                                            + "x" + ((BitmapDrawable) incoming).getBitmap().getHeight());
+                                }
+                            }
                             return;
                         }
                         // 宿主换了图：息屏时它先给占位图，亮屏后才把真头像写进来。
@@ -631,7 +651,7 @@ public class HookEntry implements IXposedHookLoadPackage {
      * 重新贴主题图标（白名单内再叠头像 + 角标）。抖音这类推送通道的聚合行只走这条。
      */
     private static void applyRowIconToView(View v, String pkgHint) {
-        if (v == null || !ROW_ICON_CLASS.equals(v.getClass().getName()) || !isAppIconId(v)) {
+        if (!isRowIconView(v) || !isAppIconId(v)) {
             return;
         }
         if (sInReapply.get()) {
@@ -695,7 +715,11 @@ public class HookEntry implements IXposedHookLoadPackage {
             av("compose " + pkg);
         }
         if (themed == null) {
-            av("no themed " + pkg);
+            // 按包去重：这条日志以前逐行刷，几秒就把 av() 的 200 条预算烧光，
+            // 关键包（微信等）的判定过程反而被挤掉。
+            if (sAvSeen.add("nt:" + pkg)) {
+                av("no themed " + pkg);
+            }
             return;
         }
         applyRowIconRecursive(root, themed, avatar, pkg, 0);
@@ -706,7 +730,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (depth > 10) {
             return;
         }
-        if (v instanceof ImageView && ROW_ICON_CLASS.equals(v.getClass().getName()) && isAppIconId(v)) {
+        if (v instanceof ImageView && isRowIconView(v) && isAppIconId(v)) {
             Drawable shown = themed;
             if (avatar != null) {
                 Context ctx = IconPackSource.appContext();
@@ -783,6 +807,18 @@ public class HookEntry implements IXposedHookLoadPackage {
             new java.util.concurrent.atomic.AtomicInteger();
     private static final java.util.concurrent.atomic.AtomicInteger sAvAlways =
             new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.Set<String> sViewSeen =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    private static String idNameOf(View v) {
+        try {
+            int id = v.getId();
+            return id == View.NO_ID ? "noid" : v.getResources().getResourceEntryName(id);
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
     private static final java.util.Set<String> sAvSeen =
             java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
 

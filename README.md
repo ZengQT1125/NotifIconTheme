@@ -32,6 +32,7 @@ LSPosed 模块。把桌面图标包（ADW / Blueprint 那一套 `appfilter.xml` 
 | 头像白名单 | 只有勾上的应用才做「头像 + 角标」，避免促销大图被当成头像 |
 | 图标包 | 自动探测或手动指定 |
 | 图标缩放 | 0.60–1.00，默认 0.90（图标包 PNG 自带留白时调这个） |
+| 诊断日志 | 排查问题用：往 LSPosed 日志打横幅视图树与头像判定过程，平时关掉 |
 
 ## Hook 表
 
@@ -43,6 +44,7 @@ LSPosed 模块。把桌面图标包（ADW / Blueprint 那一套 `appfilter.xml` 
 | `StatusBarIconView.onDarkChanged(ArrayList, float, int)` | 亮暗切换后回贴 |
 | `NotificationHeaderViewWrapper.onContentUpdated(ExpandableNotificationRow)` | 通知卡片左侧图标入口 |
 | `NotificationRowIconView.setImageIcon(Icon)` + `ImageView.setImageDrawable/setImageBitmap` | 异步加载晚到覆盖后回贴 |
+| `*NotificationRowIconView`（类名后缀，含 `OplusGroupNotificationRowIconView`） | ColorOS 分组行 / 锁屏行用的行图标控件，与 AOSP 同名不同类 |
 | `HeadsUpTempViewCreator$init$1.onInflationFinished(NotificationEntry, NotifViewController)` | 横幅图标 |
 | `CapsuleNotificationCardView.getRoundedIcon(NotificationIconData)` | 锁屏岛胶囊图标 |
 | `LockScreenNotificationIconData.getIcon()` | 锁屏通知列表图标 |
@@ -111,6 +113,11 @@ aapt2 那一步仍然可能挂。CI 在 Linux 上是 ASCII 路径，没这个问
 
 | versionName | 内容 |
 | --- | --- |
+| 3.14 | `no themed` 日志按包去重，不再烧光日志预算 |
+| 3.13 | 行图标按类名后缀认，修掉锁屏与分组通知整条被跳过（`OplusGroupNotificationRowIconView`） |
+| 3.12 | 锁屏诊断日志（capsule / lsicon / 非行图标视图的类名与 id） |
+| 3.11 | 日志预算改造：横幅与头像关键路径改走独立预算，逐行噪音删掉 |
+| 3.10 | 设置页补上「诊断日志」开关 |
 | 3.7 | 没有真头像就只显示主题图标（去掉字母头像补齐）；角标去掉白圈；不再需要 hook 系统框架 |
 | 3.5 | 配置镜像进 `Settings.Global`，修掉模块进程被冻结后 `avatar` 被钉成 false |
 | 3.3 | 头像来源加推送 extras，与 app 图标做像素比对剔除 logo |
