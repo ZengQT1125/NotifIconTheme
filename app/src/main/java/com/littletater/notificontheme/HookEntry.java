@@ -226,7 +226,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 if (param.args[0] instanceof View) {
                                     View row = (View) param.args[0];
                                     String pkg = pkgOfRow(param.args[0]);
-                                    av("hdr " + pkg);
+                                    // 每行都打会把日志预算烧光，只留真正的合成事件
                                     applyRowIcon(row, pkg, avatarOfRow(row, pkg));
                                 }
                             } catch (Throwable t) {
@@ -252,7 +252,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                         if (rowObj instanceof View) {
                             View row = (View) rowObj;
                             String pkg = pkgOfRow(rowObj);
-                            av("oplus " + pkg);
+                            // 同上：不逐行打
                             applyRowIcon(row, pkg, avatarOfRow(row, pkg));
                         }
                     } catch (Throwable t) {
@@ -311,14 +311,17 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (root == null || pkg == null || pkg.isEmpty()) {
             return;
         }
+        int[] seen = new int[]{0, 0};   // [0]=ImageView 数, [1]=BitmapDrawable 数
         try {
-            replaceAppIconRecursive(root, pkg, 0, new int[]{40});
+            replaceAppIconRecursive(root, pkg, 0, new int[]{40}, seen);
         } catch (Throwable t) {
-            av("banner err " + t);
+            avAlways("banner err " + t);
         }
+        avAlways("banner scan pkg=" + pkg + " imageviews=" + seen[0] + " bitmaps=" + seen[1]);
     }
 
-    private static void replaceAppIconRecursive(View v, String pkg, int depth, int[] budget) {
+    private static void replaceAppIconRecursive(View v, String pkg, int depth, int[] budget,
+                                                int[] seen) {
         if (v == null || depth > 8 || budget[0] <= 0) {
             return;
         }
@@ -326,7 +329,9 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (v instanceof ImageView) {
             ImageView iv = (ImageView) v;
             Drawable d = iv.getDrawable();
+            seen[0]++;
             if (d instanceof BitmapDrawable) {
+                seen[1]++;
                 Bitmap bm = ((BitmapDrawable) d).getBitmap();
                 Drawable themed = IconPackSource.themedDrawable(pkg);
                 if (bm != null && themed != null && d != iv.getTag(TAG_BANNER_ICON)
@@ -339,14 +344,14 @@ public class HookEntry implements IXposedHookLoadPackage {
                     } finally {
                         sInReapply.set(false);
                     }
-                    av("banner icon -> themed " + pkg);
+                    avAlways("banner hit " + pkg + " -> themed");
                 }
             }
         }
         if (v instanceof android.view.ViewGroup) {
             android.view.ViewGroup g = (android.view.ViewGroup) v;
             for (int i = 0; i < g.getChildCount(); i++) {
-                replaceAppIconRecursive(g.getChildAt(i), pkg, depth + 1, budget);
+                replaceAppIconRecursive(g.getChildAt(i), pkg, depth + 1, budget, seen);
             }
         }
     }
@@ -399,11 +404,13 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 if (row == null) {
                                     row = viewOfEntry(param.args[0]);
                                 }
+                                avAlways("banner fired pkg=" + pkg + " row="
+                                        + (row == null ? "null" : row.getClass().getSimpleName()));
                                 if (row != null) {
                                     applyRowIcon(row, pkg, avatarOfEntry(param.args[0], pkg));
                                     replaceAppIconImages(row, pkg);
                                 }
-                                if (IconPackSource.debug() && sBannerDump.incrementAndGet() <= 2) {
+                                if (IconPackSource.debug() && sBannerDump.incrementAndGet() <= 3) {
                                     dumpTree(row, 0);
                                 }
                             } catch (Throwable t) {
@@ -684,9 +691,11 @@ public class HookEntry implements IXposedHookLoadPackage {
             return;
         }
         Drawable themed = IconPackSource.themedDrawable(pkg);
-        av("row " + pkg + " themed=" + (themed != null) + " av=" + (avatar != null)
-                + " allow=" + IconPackSource.avatarAllowed(pkg));
+        if (themed != null && avatar != null && sAvSeen.add(pkg)) {
+            av("compose " + pkg);
+        }
         if (themed == null) {
+            av("no themed " + pkg);
             return;
         }
         applyRowIconRecursive(root, themed, avatar, pkg, 0);
@@ -772,6 +781,18 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     private static final java.util.concurrent.atomic.AtomicInteger sAvLog =
             new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger sAvAlways =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.Set<String> sAvSeen =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    /** 关键事件日志：不受 av() 的 200 条预算影响，单独 300 条。 */
+    private static void avAlways(String msg) {
+        if (!IconPackSource.debug() || sAvAlways.incrementAndGet() > 300) {
+            return;
+        }
+        IconPackSource.log("av* " + msg);
+    }
 
     /** 头像链路诊断日志：只有打开「诊断日志」才写，且最多 200 条。 */
     private static void av(String msg) {
