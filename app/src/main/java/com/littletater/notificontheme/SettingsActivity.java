@@ -70,6 +70,7 @@ public class SettingsActivity extends Activity {
     private Switch shadeSwitch;
     private Switch lockSwitch;
     private Switch avatarSwitch;
+    private Switch debugSwitch;
     private TextView avatarPacksSummary;
     private SeekBar scaleBar;
     private TextView scaleValue;
@@ -147,6 +148,9 @@ public class SettingsActivity extends Activity {
                 startActivity(new Intent(SettingsActivity.this, AvatarWhitelistActivity.class));
             }
         });
+        divider(switches);
+        debugSwitch = switchRow(switches, "诊断日志",
+                "排查问题用：往 LSPosed 日志打横幅视图树与头像判定过程", false);
         root.addView(switches);
 
         // ---- 图标包卡片
@@ -293,6 +297,7 @@ public class SettingsActivity extends Activity {
         shadeSwitch.setChecked(sp.getBoolean(ConfigStore.KEY_SHADE, true));
         lockSwitch.setChecked(sp.getBoolean(ConfigStore.KEY_LOCK, true));
         avatarSwitch.setChecked(sp.getBoolean(ConfigStore.KEY_AVATAR, false));
+        debugSwitch.setChecked(sp.getBoolean(ConfigStore.KEY_DEBUG, false));
         selectedPack = sp.getString(ConfigStore.KEY_PACK, "");
         float scale = sp.getFloat(ConfigStore.KEY_SCALE, 0.90f);
         scaleBar.setProgress(Math.round((scale - 0.6f) * 100f));
@@ -345,6 +350,7 @@ public class SettingsActivity extends Activity {
         ed.putBoolean(ConfigStore.KEY_SHADE, shadeSwitch.isChecked());
         ed.putBoolean(ConfigStore.KEY_LOCK, lockSwitch.isChecked());
         ed.putBoolean(ConfigStore.KEY_AVATAR, avatarSwitch.isChecked());
+        ed.putBoolean(ConfigStore.KEY_DEBUG, debugSwitch.isChecked());
         ed.putString(ConfigStore.KEY_PACK, selectedPack);
         ed.putFloat(ConfigStore.KEY_SCALE, 0.6f + scaleBar.getProgress() / 100f);
         ed.apply();
